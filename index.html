@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<!--
+  Route Work Board (standalone copy)
+  Built with plain HTML, CSS and JavaScript. Styled to match the Kenco report email template (Georgia/Verdana, navy band).
+  Libraries loaded from cdnjs:
+    pdf.js 3.11.174   reads the RoadNet route PDFs in the browser
+    jsPDF 2.5.1       builds the pick ticket PDF
+    JsBarcode 3.11.6  draws the Code 128 ship-to barcodes
+  Storage: on claude.ai it uses the artifact's shared database (claude.use("db")).
+  Opened anywhere else it falls back to this browser's local storage, so data is
+  NOT shared between PCs. To share across PCs, replace writeDoc(), removeDoc(),
+  saveSettings() and the onSnapshot() listeners in the boot section with calls to
+  your own backend (for example a SharePoint list or a small server).
+  Printing outside claude.ai: tickets open with a print command. Start Chrome with
+  --kiosk-printing to send them straight to the default printer.
+  Employee screen: open this file with #floor at the end of the address.
+-->
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px/1.45 system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+</head>
+<body>
+<title>Route Work Board</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.6/JsBarcode.all.min.js"></script>
+<style>
+/* Layout: Kenco report look. Navy header band, light blue-grey page, white content panel with Georgia section heads, KPI tiles, ruled tables, navy footer band. Light theme only, as in the Kenco email templates. */
+:root{
+  --navy:#001f2b; --teal-dark:#174a5b; --teal:#4797a8; --aqua:#66cadb;
+  --bg:#eef2f6; --panel:#ffffff; --tile:#f5f8fa; --ink:#1a1a1a; --muted:#4a5560; --line:#dce3eb; --soft:#eef2f6;
+  --accent:#174a5b; --accent-ink:#ffffff; --accent-soft:#e3eff2;
+  --pri:#c8372d; --pri-soft:#f8dcd9;
+  --s-open:#4a5560; --s-assigned:#174a5b; --s-progress:#8a6500; --s-done:#14532d;
+  --s-open-bg:#eef2f6; --s-assigned-bg:#dceef2; --s-progress-bg:#fbefc7; --s-done-bg:#dcefe3;
+  --bar-open:#8a96a3; --bar-assigned:#4797a8; --bar-progress:#e0a800; --bar-done:#2e8b57;
+  --font-display:Georgia,"Times New Roman",serif;
+  --font-body:Verdana,Geneva,"DejaVu Sans",sans-serif;
+  --font-mono:Verdana,Geneva,"DejaVu Sans",sans-serif;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-body);font-size:13px;line-height:1.5}
+button,select,input{font:inherit;color:inherit}
+a{color:var(--teal-dark)} a:hover{color:var(--teal)}
+/* bands */
+.band{background:var(--navy);color:#fff}
+.band-in{max-width:1680px;margin:0 auto;padding-block:26px 24px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:16px}
+.eyebrow{margin:0 0 10px;font-size:12px;line-height:16px;letter-spacing:1.5px;text-transform:uppercase;color:var(--aqua)}
+h1{margin:0;font-family:var(--font-display);font-size:28px;line-height:34px;font-weight:bold;color:#fff;text-wrap:balance}
+.band .sub{margin:8px 0 0;font-family:var(--font-display);font-size:16px;line-height:22px;color:var(--line)}
+.hdr-right{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.band .mode{font-size:11px;color:var(--line)}
+.mode b{color:#7fd49b} .mode b.local{color:#f0c64a}
+.band .btn{background:transparent;color:#fff;border-color:var(--aqua)}
+.band .btn:hover{background:rgba(102,202,219,.15);color:#fff}
+.foot .band-in{padding-block:20px;font-size:11px;line-height:17px;color:var(--line);align-items:center}
+.foot a{color:var(--aqua)}
+/* content panel */
+.wrap{max-width:1680px;margin:0 auto;background:var(--panel);padding-block:8px 36px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:14px}
+@media (min-width:700px){.wrap{padding-left:max(28px,env(safe-area-inset-left,0px));padding-right:max(28px,env(safe-area-inset-right,0px))}.band-in{padding-left:max(28px,env(safe-area-inset-left,0px));padding-right:max(28px,env(safe-area-inset-right,0px))}}
+h2{margin:22px 0 0;font-family:var(--font-display);font-size:20px;line-height:26px;font-weight:bold;color:var(--teal-dark)}
+h2+.note{margin:-8px 0 0;font-size:12px;color:var(--muted)}
+.label{font-size:11px;line-height:16px;letter-spacing:1px;text-transform:uppercase;font-weight:bold;color:var(--teal)}
+.sub{color:var(--muted);margin:2px 0 0;font-size:12px}
+/* buttons */
+.btn{border:1px solid var(--line);background:#fff;color:var(--teal-dark);border-radius:4px;padding:8px 14px;cursor:pointer;font-weight:bold;font-size:12px}
+.btn:hover{border-color:var(--teal)}
+.btn.primary{background:var(--teal-dark);border-color:var(--teal-dark);color:#fff}
+.btn.primary:hover{background:#0f3846}
+.btn.danger{color:var(--pri);border-color:var(--pri);background:#fff}
+.btn.small{padding:5px 10px;font-size:12px}
+.btn.big{padding:14px 24px;font-size:16px}
+a.btn{text-decoration:none;display:inline-block}
+.btn:focus-visible,select:focus-visible,input:focus-visible,.pill:focus-visible,.tile:focus-visible,.drop:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+/* drop strip */
+.drop{border:2px dashed var(--line);border-radius:4px;background:var(--tile);padding:18px;display:flex;flex-wrap:wrap;align-items:center;gap:14px;cursor:pointer;transition:border-color .15s,background .15s}
+.drop:hover{border-color:var(--teal)}
+.drop.over{border-color:var(--teal-dark);background:var(--accent-soft)}
+.drop .glyph{width:42px;height:50px;flex:none;border:2px solid var(--teal-dark);border-radius:2px;position:relative;font-size:9px;font-weight:bold;color:var(--teal-dark);display:flex;align-items:flex-end;justify-content:center;padding-bottom:5px;background:#fff}
+.drop .glyph::before{content:"";position:absolute;top:-2px;right:-2px;width:12px;height:12px;background:var(--tile);border-left:2px solid var(--teal-dark);border-bottom:2px solid var(--teal-dark)}
+.drop .txt{flex:1;min-width:200px}
+.drop strong{font-family:var(--font-display);font-size:17px;color:var(--teal-dark);display:block}
+.drop small{color:var(--muted);font-size:12px}
+.log{display:flex;flex-direction:column;gap:4px}
+.log div{font-size:12px}
+.log .ok{color:var(--s-done)} .log .err{color:var(--pri)}
+/* rules */
+details.rules{background:#fff;border:1px solid var(--line);border-radius:0}
+details.rules summary{cursor:pointer;padding:12px 16px;font-family:var(--font-display);font-weight:bold;font-size:15px;color:var(--teal-dark);list-style:none;display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
+details.rules summary::-webkit-details-marker{display:none}
+details.rules summary .hint{font-family:var(--font-body);font-weight:normal;color:var(--muted);font-size:12px}
+.rules-body{padding:4px 16px 16px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px}
+.rules-body h3{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--teal);margin:0 0 8px;font-weight:bold}
+.field{display:flex;flex-direction:column;gap:6px}
+.radio{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.rule{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px}
+.rule select,.rule input,.inp{border:1px solid var(--line);background:#fff;border-radius:3px;padding:6px 8px;min-width:0}
+.rule input{width:110px}
+.linkbtn{background:none;border:0;color:var(--teal-dark);cursor:pointer;padding:0;font-weight:bold;text-decoration:underline}
+.x{background:none;border:0;color:var(--muted);cursor:pointer;font-size:16px;padding:0 4px}
+/* KPI tiles (status filters) */
+.summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.tile{text-align:left;background:var(--tile);border:0;border-top:4px solid var(--c,var(--teal-dark));padding:12px 14px;cursor:pointer;display:flex;flex-direction:column;gap:2px;min-width:0}
+.tile .tl{font-size:12px;color:var(--ink)}
+.tile .tn{font-family:var(--font-display);font-size:30px;line-height:34px;font-weight:bold;color:var(--teal-dark)}
+.tile .tw{font-size:11px;color:var(--muted)}
+.tile:hover{background:var(--accent-soft)}
+.tile[aria-pressed="true"]{background:var(--teal-dark)}
+.tile[aria-pressed="true"] .tl,.tile[aria-pressed="true"] .tn,.tile[aria-pressed="true"] .tw{color:#fff}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.toolbar .grow{flex:1;min-width:160px}
+.check{display:inline-flex;align-items:center;gap:6px;font-weight:bold;color:var(--teal-dark)}
+.totals{margin-left:auto;font-size:12px;color:var(--muted)}
+/* bulk bar */
+.bulk{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:var(--teal-dark);color:#fff;padding:8px 12px}
+.bulk .inp{border:0}
+.bulk .btn{background:transparent;color:#fff;border-color:rgba(255,255,255,.45)}
+.bulk .btn.danger{color:#ffb4ab;border-color:#ffb4ab}
+/* table */
+.tablebox{background:#fff;overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:900px}
+#tbl th,#tbl td{padding-left:6px;padding-right:6px}
+#tbl th{white-space:normal}
+th{font-family:var(--font-display);font-weight:bold;font-size:13px;color:var(--teal-dark);text-align:left;padding:8px 10px 6px;border-bottom:2px solid var(--teal-dark);white-space:nowrap;background:#fff}
+td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr.item:hover td{background:var(--tile)}
+tr.item.isdone td{color:var(--muted)}
+.num{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.mono{font-size:12px}
+.route{font-family:var(--font-display);font-weight:bold;font-size:15px;color:var(--teal-dark)}
+.site{font-size:11px;color:var(--muted)}
+.route+.site{white-space:nowrap}
+.pill{border:1px solid var(--line);background:#fff;border-radius:999px;font-weight:bold;width:36px;height:26px;cursor:pointer;color:var(--muted)}
+.pill.Y{background:var(--pri);border-color:var(--pri);color:#fff}
+.status{border:1px solid transparent;border-radius:999px;padding:4px 10px;font-weight:bold;font-size:12px;cursor:pointer}
+.status.open{background:var(--s-open-bg);color:var(--s-open)}
+.status.assigned{background:var(--s-assigned-bg);color:var(--s-assigned)}
+.status.in_progress{background:var(--s-progress-bg);color:var(--s-progress)}
+.status.done{background:var(--s-done-bg);color:var(--s-done)}
+td .inp{width:100%;min-width:100px;background:transparent}
+td .inp:hover,td .inp:focus{background:#fff;border-color:var(--teal)}
+.when{font-size:11px;color:var(--muted);white-space:nowrap}
+.when.over{color:var(--pri);font-weight:bold}
+tr.item.late td{background:#fdf0ee}
+tr.item.late td:first-child{box-shadow:inset 4px 0 0 var(--pri)}
+tr.item.late:hover td{background:#fbe4e0}
+.pal-tag{display:inline-block;background:var(--s-assigned-bg);color:var(--teal-dark);border:1px solid var(--teal);border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:2px;font-family:var(--font-body);font-size:10px;font-weight:bold;letter-spacing:.5px;text-transform:uppercase}
+.pal-badge{display:inline-block;min-width:20px;text-align:center;background:var(--teal-dark);color:#fff;border-radius:3px;font-weight:bold;font-size:11px;padding:1px 5px}
+.stoptable tr.pal-row td{background:#e6f2f5}
+.floor-pal{background:var(--s-assigned-bg);color:var(--teal-dark);border-left:4px solid var(--teal-dark);padding:12px 14px;font-size:14px;line-height:1.5}
+.floor-pal b{font-family:var(--font-display);font-size:16px}
+.late-tag{display:inline-block;background:var(--pri);color:#fff;border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:2px;font-family:var(--font-body);font-size:10px;letter-spacing:.5px;text-transform:uppercase}
+.cust{max-width:clamp(120px,14vw,260px);font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exp{background:none;border:0;cursor:pointer;color:var(--teal-dark);font-size:14px;width:24px}
+tr.stops td{background:var(--tile);padding:0}
+.stoptable{min-width:0;font-size:12px}
+.stoptable th{background:transparent;font-size:12px;padding:8px 10px 4px;border-bottom:1px solid var(--teal-dark)}
+.stoptable td{padding:5px 10px;border-bottom:1px solid var(--line)}
+.empty{padding:40px 16px;text-align:center;color:var(--muted)}
+.empty strong{display:block;color:var(--teal-dark);font-family:var(--font-display);font-size:18px;margin-bottom:4px}
+/* employee screen */
+.floor{min-height:100%;display:flex;flex-direction:column;align-items:center;gap:20px;padding-bottom:40px}
+.floor .band{width:100%}
+.floor-card{width:calc(100% - 32px);max-width:720px;background:#fff;border-top:4px solid var(--teal-dark);padding:32px;display:flex;flex-direction:column;gap:18px}
+.floor-q{font-family:var(--font-display);font-size:24px;font-weight:bold;color:var(--teal-dark);text-wrap:balance}
+.floor-input{font-size:28px;padding:14px 16px;border:2px solid var(--line);border-radius:4px;background:#fff;width:100%}
+.floor-input:focus{border-color:var(--teal-dark);outline:none}
+.floor-actions{display:flex;flex-wrap:wrap;gap:12px}
+.floor-wait{margin:0;color:var(--muted);font-size:14px}
+.floor-for{font-size:12px;letter-spacing:1px;text-transform:uppercase;font-weight:bold;color:var(--teal)}
+.floor-pick{font-family:var(--font-display);font-weight:bold;color:var(--teal-dark);font-size:clamp(34px,8vw,56px);line-height:1.05;word-break:break-word}
+.floor-routes{font-size:15px;color:var(--muted)}
+.floor-stats{font-family:var(--font-display);font-size:22px;font-weight:bold;color:var(--teal-dark);display:flex;gap:28px;flex-wrap:wrap}
+.floor-closed{background:var(--s-done-bg);color:var(--s-done);padding:12px 14px;font-weight:bold;font-size:14px}
+.floor-closed.warn{background:var(--pri-soft);color:var(--pri)}
+.floor-hint{margin:0;color:var(--muted);font-size:12px}
+.floor-back{color:var(--muted);font-size:12px}
+.pri-tag{display:inline-block;background:var(--pri);color:#fff;font-family:var(--font-body);font-weight:bold;font-size:13px;letter-spacing:1px;padding:4px 10px;border-radius:999px;vertical-align:middle;margin-left:12px}
+.toast{position:fixed;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--navy);color:#fff;padding:10px 14px;border-left:4px solid var(--aqua);font-size:12px;box-shadow:0 6px 24px rgba(0,0,0,.2);z-index:20;max-width:min(520px,calc(100vw - 32px))}
+.confirm{display:inline-flex;gap:6px;align-items:center}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (max-width:560px){h1{font-size:23px;line-height:28px}.totals{margin-left:0;width:100%}.hdr-right{align-items:flex-start}.floor-card{padding:22px}}
+</style>
+
+<div id="boardView">
+<header class="band"><div class="band-in">
+  <div>
+    <p class="eyebrow">Kenco · Route Work</p>
+    <h1>Route Work Board</h1>
+    <p class="sub" id="bandDate">Drop RoadNet route sheets, build ~8,000 LB picks, hand them out and track them to complete.</p>
+  </div>
+  <div class="hdr-right"><a class="btn small" href="#floor" id="toFloor">Open employee screen</a><div class="mode" id="mode">Connecting…</div></div>
+</div></header>
+<div class="wrap">
+  <h2>Add Route Sheets</h2>
+  <p class="note">Drop one or more RoadNet PDFs. Sheets dropped together are grouped together, in drop order.</p>
+
+  <div class="drop" id="drop" tabindex="0" role="button" aria-label="Add route PDFs">
+    <div class="glyph" aria-hidden="true">PDF</div>
+    <div class="txt">
+      <strong>Drop route PDFs here</strong>
+      <small>or click to choose files. Stops already on the board are skipped.</small>
+    </div>
+    <div class="log" id="log"></div>
+    <input type="file" id="file" accept="application/pdf,.pdf" multiple hidden>
+  </div>
+
+  <details class="rules" id="rulesPanel">
+    <summary><span>Work rules</span><span class="hint" id="rulesHint"></span></summary>
+    <div class="rules-body">
+      <div class="field">
+        <h3>One work item per</h3>
+        <label class="radio"><input type="radio" name="unit" id="unitGroup" value="group"> Weight group on a route</label>
+        <label class="radio" style="padding-left:24px">Target about
+          <input class="inp" id="target" type="number" min="500" step="500" style="width:100px" placeholder="8000"> LB per group</label>
+        <label class="radio"><input type="radio" name="unit" id="unitRoute" value="route"> Whole route</label>
+        <label class="radio"><input type="radio" name="unit" id="unitDelivery" value="delivery"> Each delivery</label>
+        <small class="sub">Groups fill in drop order: each route's stops in RoadNet stop order, then the next route. A pick closes at the target (up to 5% over), and can carry over into the next route when sheets are dropped together. Consolidation pairs stay together, even out of stop sequence. A single stop heavier than that gets its own pick.</small>
+      </div>
+      <div class="field">
+        <h3>Only use rows where</h3>
+        <div id="ruleList"></div>
+        <div><button class="linkbtn" id="addRule" type="button">+ Add a condition</button></div>
+        <small class="sub">Leave empty to use every row. Conditions apply to new drops.</small>
+      </div>
+      <div class="field">
+        <h3>Auto priority</h3>
+        <label class="radio">Set priority to Y when weight ≥
+          <input class="inp" id="autoPri" type="number" min="0" step="100" style="width:110px" placeholder="off"> LB</label>
+        <small class="sub">Applies only when a route first comes in. You can always flip Y/N by hand.</small>
+      </div>
+      <div class="field">
+        <h3>Home patient consolidation</h3>
+        <label class="radio"><input type="checkbox" id="consolOn"> Flag home patient orders to pick on one pallet</label>
+        <label class="radio">Each order under <input class="inp" id="consolMax" type="number" min="50" step="50" style="width:90px"> LB</label>
+        <label class="radio">Within <input class="inp" id="consolWindow" type="number" min="1" max="20" step="1" style="width:70px"> stops on the same route</label>
+        <small class="sub">Home patient = 7-digit ship-to starting with 2. Two orders per pallet at most. Orders flagged together always stay in the same pick.</small>
+      </div>
+    </div>
+  </details>
+
+  <h2>Work Queue</h2>
+  <p class="note">Priority Y picks sit on top; everything else stays in the order it was dropped. Click a tile to filter.</p>
+  <div class="summary" id="chips"></div>
+
+  <div class="toolbar">
+    <select class="inp" id="fSite" aria-label="MM route"></select>
+    <select class="inp" id="fDate" aria-label="Delivery date"></select>
+    <input class="inp grow" id="fSearch" type="search" placeholder="Search MM route, route, customer, city, person">
+    <label class="check"><input type="checkbox" id="fPri"> Priority only</label>
+    <button class="btn" id="exportBtn" type="button" hidden>Export CSV</button>
+    <span class="totals" id="totals"></span>
+  </div>
+
+  <div class="bulk" id="bulk" hidden>
+    <strong id="bulkCount"></strong>
+    <input class="inp" id="bulkWho" list="people" placeholder="Hand out to…" style="width:150px">
+    <button class="btn" id="bulkAssign" type="button">Hand out</button>
+    <button class="btn" id="bulkPriY" type="button">Priority Y</button>
+    <button class="btn" id="bulkPriN" type="button">Priority N</button>
+    <button class="btn" id="bulkDone" type="button">Mark complete</button>
+    <button class="btn" id="bulkPrint" type="button">Print tickets</button>
+    <span id="bulkDelWrap"><button class="btn danger" id="bulkDel" type="button">Remove</button></span>
+    <button class="btn" id="bulkClear" type="button">Clear selection</button>
+  </div>
+
+  <div class="tablebox">
+    <table id="tbl">
+      <thead><tr>
+        <th><input type="checkbox" id="selAll" aria-label="Select all"></th>
+        <th></th>
+        <th>Priority</th>
+        <th>Pick / routes</th>
+        <th>Date</th>
+        <th class="num">Stops</th>
+        <th class="num">Weight (LB)</th>
+        <th>Customers</th>
+        <th>Handed out to</th>
+        <th>Status</th>
+        <th>Last change</th>
+        <th>Ticket</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden><strong>No routes yet</strong>Drop today's RoadNet route PDFs above and each route becomes a work item.</div>
+  </div>
+  <datalist id="people"></datalist>
+</div>
+<footer class="band foot"><div class="band-in"><span>Source: RoadNet route PDFs dropped on this board. Weights in LB.</span><span>Kenco · Route Work Board</span></div></footer>
+</div>
+
+<div class="floor" id="floorView" hidden>
+  <header class="band"><div class="band-in"><div><p class="eyebrow">Kenco · Route Work</p><h1>Pick Station</h1><p class="sub">Enter your name, get your next pick and ticket.</p></div><div class="mode" id="floorMode"></div></div></header>
+  <form class="floor-card" id="floorForm" autocomplete="off">
+    <label for="floorName" class="floor-q">Enter your name to get your next pick</label>
+    <input id="floorName" class="floor-input" list="people" placeholder="Your name" autocomplete="off" required>
+    <div class="floor-actions">
+      <button class="btn primary big" type="submit" id="floorGo">Get my next pick</button>
+      <button class="btn big" type="button" id="floorFinish">I'm finished, no new pick</button>
+    </div>
+    <p class="floor-wait" id="floorWait"></p>
+  </form>
+  <div class="floor-card result" id="floorResult" hidden>
+    <div class="floor-for" id="frFor"></div>
+    <div class="floor-pick" id="frPick"></div>
+    <div class="floor-routes" id="frRoutes"></div>
+    <div class="floor-stats" id="frStats"></div>
+    <div class="floor-pal" id="frPal" hidden></div>
+    <div class="floor-closed" id="frClosed" hidden></div>
+    <div class="floor-actions">
+      <button class="btn primary big" type="button" id="frPrint">Print ticket</button>
+      <button class="btn big" type="button" id="frDone">Done</button>
+    </div>
+    <p class="floor-hint" id="frHint">Your ticket opens to save. Open it and print.</p>
+  </div>
+  <a class="floor-back" href="#">Back to the board</a>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script id="core">
+/* ---------- PDF table parsing (pure) ---------- */
+function groupRows(items){
+  const its=items.filter(i=>i.str&&i.str.trim()).map(i=>({s:i.str.trim(),x:i.x,y:i.y})).sort((a,b)=>b.y-a.y||a.x-b.x);
+  const rows=[];
+  for(const it of its){
+    const r=rows.find(r=>Math.abs(r.y-it.y)<=3);
+    if(r) r.items.push(it); else rows.push({y:it.y,items:[it]});
+  }
+  rows.forEach(r=>r.items.sort((a,b)=>a.x-b.x));
+  return rows;
+}
+const isNumish=s=>/^[\d,.\/:-]+$/.test(s);
+function findHeader(rows){
+  let best=-1,bestN=0;
+  rows.forEach((r,i)=>{
+    const n=r.items.length, numeric=r.items.filter(c=>isNumish(c.s)).length;
+    if(n>=3&&numeric/n<=.2&&n>bestN){best=i;bestN=n}
+  });
+  return best;
+}
+function parsePages(pages,filename){
+  let header=null,title=[],out=[];
+  for(const items of pages){
+    const rows=groupRows(items);
+    const h=findHeader(rows);
+    if(h>=0&&(!header||rows[h].items.length>=header.length)){
+      if(!header){header=rows[h].items.map(c=>({name:c.s,x:c.x}));title=rows.slice(0,h).map(r=>r.items.map(c=>c.s).join(' '))}
+    }
+    if(!header) continue;
+    const start=h>=0?h+1:0;
+    for(const r of rows.slice(start)){
+      const cells=header.map(()=>[]);
+      for(const it of r.items){
+        let k=0; header.forEach((hc,j)=>{if(hc.x<=it.x+3)k=j});
+        cells[k].push(it.s);
+      }
+      const vals=cells.map(c=>c.join(' '));
+      if(vals.join('|')===header.map(h=>h.name).join('|')) continue;
+      if(vals.filter(Boolean).length<Math.ceil(header.length/2)) continue;
+      const row={}; header.forEach((hc,j)=>row[hc.name]=vals[j]); out.push(row);
+    }
+  }
+  if(!header) throw new Error('No table found (is this a scanned image?)');
+  const cols=header.map(h=>h.name);
+  const pick=(re,not)=>cols.find(c=>re.test(c)&&!(not&&not.test(c)));
+  const map={
+    route:pick(/route/i,/stop/i), delivery:pick(/deliver/i,/date/i), stop:pick(/stop/i),
+    shipTo:pick(/ship.?to/i,/name/i), name:pick(/name|customer/i), city:pick(/location|city/i),
+    date:pick(/date/i), weight:pick(/weight|wt/i,/unit/i), unit:pick(/unit|uom/i)
+  };
+  const t=title.join(' ').trim();
+  let site=(t.split(/\s+-\s+/)[0]||'').trim();
+  if(!site||site.length>16) site=((filename||'').match(/^[A-Za-z]+\d*/)||['SITE'])[0];
+  return {site:site.toUpperCase(),title:t,cols,map,rows:out};
+}
+function num(v){const n=parseFloat(String(v||'').replace(/,/g,''));return isFinite(n)?n:0}
+function isoDate(v){const m=String(v||'').match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return '';let y=+m[3];if(y<100)y+=2000;return `${y}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`}
+function passes(row,rules){
+  return (rules||[]).every(r=>{
+    if(!r.col||r.val===''||r.val==null) return true;
+    const v=row[r.col]??'', a=String(v).toLowerCase(), b=String(r.val).toLowerCase();
+    switch(r.op){
+      case 'eq':return a===b; case 'ne':return a!==b;
+      case 'has':return a.includes(b); case 'not':return !a.includes(b);
+      case 'ge':return num(v)>=num(r.val); case 'le':return num(v)<=num(r.val);
+      default:return true;
+    }
+  });
+}
+const safeId=s=>String(s).replace(/[^A-Za-z0-9_-]+/g,'-').slice(0,180);
+/* Home patient = ship-to number that is 7 digits long and starts with 2 (clinics are 6 digits). */
+const isHome=s=>/^2\d{6}$/.test(String(s.shipTo||'').trim());
+/* Consolidation: home patient orders under the weight limit on the same route, within N stops of the first one,
+   go on one pallet, two orders per pallet at most. Returns pairs of indexes into `stops`. */
+function consolClusters(stops,settings){
+  const cfg=settings||{};if(cfg.consol===false)return [];
+  const maxW=num(cfg.consolMax)||500,win=num(cfg.consolWindow)||3;
+  const byRoute=new Map();
+  stops.forEach((st,i)=>{if(isHome(st)&&num(st.weight)<maxW){const k=(st.site||'')+'|'+(st.date||'')+'|'+(st.route||'');if(!byRoute.has(k))byRoute.set(k,[]);byRoute.get(k).push(i)}});
+  const out=[];
+  for(const idx of byRoute.values()){
+    idx.sort((a,b)=>num(stops[a].stop)-num(stops[b].stop));
+    let k=0;
+    while(k<idx.length){
+      // pairs only: a pallet never holds more than 2 orders
+      if(k+1<idx.length&&num(stops[idx[k+1]].stop)-num(stops[idx[k]].stop)<=win){out.push([idx[k],idx[k+1]]);k+=2}
+      else k++;
+    }
+  }
+  return out;
+}
+/* Build picks that stay at the target weight, up to 5% over. A consolidation pair moves as one unit,
+   so its two stops sit together in the same pick even when that takes them out of stop sequence.
+   A single stop heavier than the target gets its own pick. */
+function splitStops(stops,target,settings){
+  const inPair=new Map();
+  consolClusters(stops,settings).forEach(g=>g.forEach(i=>inPair.set(i,g)));
+  const units=[],seen=new Set();
+  stops.forEach((s,i)=>{if(seen.has(i))return;const g=inPair.get(i)||[i];g.forEach(k=>seen.add(k));units.push(g.map(k=>stops[k]))});
+  const cap=target*1.05,out=[];let cur=[],w=0; // up to 5% over the target is allowed
+  for(const u of units){
+    const uw=u.reduce((t,x)=>t+x.weight,0);
+    if(cur.length&&w+uw>cap){out.push(cur);cur=[];w=0}
+    cur.push(...u);w+=uw;
+  }
+  if(cur.length)out.push(cur);return out;
+}
+function finishWork(g){
+  g.weight=Math.round(g.stops.reduce((s,x)=>s+x.weight,0)*1000)/1000;
+  g.stopCount=g.stops.length;return g;
+}
+const uniq=a=>[...new Set(a)];
+/* Display name: the pick's MM route(s), e.g. OKC1 or OKC1 / OKC2. When several picks on the same date share a name, add "1 of 3" etc. in drop order. */
+const baseName=it=>{const ss=it.sites&&it.sites.length?it.sites:[it.site];return ss.join(' / ')};
+const pickName=it=>{
+  const b=baseName(it),same=[...state.items.values()].filter(o=>baseName(o)===b&&o.date===it.date)
+    .sort((p,q)=>(p.seq||p.createdAt*1000||0)-(q.seq||q.createdAt*1000||0)||String(p.id).localeCompare(q.id));
+  if(same.length<2)return b;
+  const k=same.findIndex(o=>o.id===it.id);return `${b} · ${k<0?'?':k+1} of ${same.length}`;
+};
+/* Pallets to consolidate inside one pick: letters A, B, ... in stop order. */
+function palletsOf(it){
+  const fb=(it.sites&&it.sites[0])||it.site, rt=(it.routes&&it.routes.length===1)?it.routes[0]:it.route;
+  const stops=(it.stops||[]).map(st=>({...st,site:st.site||fb,date:st.date||it.date,route:st.route||rt}));
+  const groups=consolClusters(stops,state.settings).sort((a,b)=>Math.min(...a)-Math.min(...b));
+  const byIdx=new Map(),list=[];
+  groups.forEach((g,n)=>{const L=String.fromCharCode(65+n);g.forEach(i=>byIdx.set(i,L));
+    list.push({letter:L,stops:g.map(i=>stops[i]),weight:g.reduce((t,i)=>t+num(stops[i].weight),0)})});
+  return {byIdx,list};
+}
+const deliveryKey=(site,s)=>`${site}|${s.delivery||s.route+'-'+s.stop}`;
+/* Flatten every dropped sheet into one stop list, in drop order:
+   file order, then route (first appearance on the sheet), then RoadNet stop number. */
+function collectStops(parsedList,settings){
+  const out=[];
+  for(const {parsed,source} of parsedList){
+    const {map,site}=parsed;
+    const rows=parsed.rows.filter(r=>passes(r,settings.rules)).map(r=>({
+      site,route:(r[map.route]||'').trim()||'NO-ROUTE',date:isoDate(r[map.date]),stop:r[map.stop]||'',
+      delivery:r[map.delivery]||'',shipTo:r[map.shipTo]||'',name:r[map.name]||'',city:r[map.city]||'',
+      weight:num(r[map.weight]),unit:r[map.unit]||'LB',source}));
+    const order=new Map();rows.forEach(r=>{if(!order.has(r.route))order.set(r.route,order.size)});
+    rows.sort((x,y)=>order.get(x.route)-order.get(y.route)||num(x.stop)-num(y.stop));
+    out.push(...rows);
+  }
+  return out;
+}
+function groupStops(stops,settings){
+  const mode=settings.unit||'group';
+  if(mode==='delivery')return stops.map(x=>[x]);
+  if(mode==='route'){const m=new Map();for(const x of stops){const k=x.site+'|'+x.date+'|'+x.route;if(!m.has(k))m.set(k,[]);m.get(k).push(x)}return [...m.values()]}
+  return splitStops(stops,num(settings.target)||8000,settings); // weight groups may span routes in the same drop
+}
+function summarize(stops){
+  const routes=uniq(stops.map(x=>x.route)),sites=uniq(stops.map(x=>x.site)),dates=uniq(stops.map(x=>x.date)).sort();
+  return {stops,routes,sites,dates,route:routes.join(' + '),site:sites.join(' / '),date:dates[0]||'',
+    weight:Math.round(stops.reduce((t,x)=>t+x.weight,0)*1000)/1000,stopCount:stops.length,source:uniq(stops.map(x=>x.source)).join(', ')};
+}
+function labelPrefix(iso){const [,m,d]=(iso||'--').split('-');return (m||'00')+(d||'00')}
+</script>
+
+<script>
+/* ---------- state ---------- */
+/* Handed-out picks open longer than this are flagged. */
+const LATE_MS=3*60*60*1000;
+const openFor=i=>(i.status==='assigned'||i.status==='in_progress')?Date.now()-(i.assignedAt||i.changedAt||Date.now()):null;
+const isLate=i=>{const t=openFor(i);return t!=null&&t>LATE_MS};
+const STATUS=[['open','Not handed out'],['assigned','Handed out'],['in_progress','In progress'],['done','Complete']];
+const STATUS_LABEL=Object.fromEntries(STATUS);
+const OPS=[['eq','equals'],['ne','does not equal'],['has','contains'],['not','does not contain'],['ge','≥'],['le','≤']];
+const KNOWN_COLS=['RoadNet Route ID','Delivery','RoadNet Stop Number','Ship-to party','Name of the ship-to party','Location of the sold-to party','Deliv. date(From/to)','Total Weight','Weight unit'];
+const state={items:new Map(),settings:{unit:'route',rules:[],autoPri:''},sel:new Set(),open:new Set(),
+  f:{status:'all',site:'',date:'',q:'',pri:false},cols:new Set(KNOWN_COLS)};
+state.settings.unit='group';state.settings.target=8000;state.settings.consol=true;state.settings.consolMax=500;state.settings.consolWindow=3;
+let db=null, downloads=null, readOnly=false;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtW=n=>Number(n||0).toLocaleString('en-US',{maximumFractionDigits:0});
+const fmtDate=iso=>{if(!iso)return '—';const [y,m,d]=iso.split('-');return `${+m}/${+d}`};
+function ago(ts){if(!ts)return '';const s=(Date.now()-ts)/1000;if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return new Date(ts).toLocaleDateString('en-US',{month:'numeric',day:'numeric'})}
+function toast(msg){const t=$('toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,Math.max(2600,msg.length*60))}
+
+/* ---------- storage: shared db, or this browser only ---------- */
+const LS='routeboard.v1';
+function lsSave(){try{localStorage.setItem(LS,JSON.stringify({items:[...state.items.values()],settings:state.settings}))}catch(e){}}
+function lsLoad(){try{const d=JSON.parse(localStorage.getItem(LS)||'null');if(d){d.items.forEach(i=>state.items.set(i.id,i));Object.assign(state.settings,d.settings||{})}}catch(e){}}
+const queue=new Map();
+async function writeDoc(id,data,merge){
+  if(!db){const cur=state.items.get(id)||{};state.items.set(id,merge?{...cur,...data}:data);lsSave();render();return}
+  const prev=queue.get(id)||Promise.resolve();
+  const p=prev.then(()=>merge?db.doc('work/'+id).update(data):db.doc('work/'+id).set(data)).catch(e=>{
+    if(e&&e.code==='invalid_argument'){readOnly=true;toast('You have view-only access to this board.')}
+    else if(e&&e.code==='quota_exceeded'){toast('The board is full. Remove completed routes, then try again.')}
+    else toast('Could not save. Check your connection and try again.');
+  });
+  queue.set(id,p);
+  // optimistic local update
+  const cur=state.items.get(id)||{};state.items.set(id,merge?{...cur,...data}:data);render();
+  return p;
+}
+async function removeDoc(id){
+  state.items.delete(id);state.sel.delete(id);
+  if(!db){lsSave();render();return}
+  render();await (queue.get(id)||Promise.resolve());return db.doc('work/'+id).delete().catch(()=>toast('Could not remove. Try again.'));
+}
+let settingsTimer=null;
+function saveSettings(){
+  renderRulesHint();
+  clearTimeout(settingsTimer);
+  settingsTimer=setTimeout(()=>{
+    if(!db){lsSave();return}
+    db.doc('config/settings').set({...state.settings}).catch(()=>{});
+  },500);
+}
+
+/* ---------- import ---------- */
+async function readPdf(file){
+  const buf=await file.arrayBuffer();
+  const doc=await pdfjsLib.getDocument({data:new Uint8Array(buf)}).promise;
+  const pages=[];
+  for(let p=1;p<=doc.numPages;p++){
+    const pg=await doc.getPage(p);const tc=await pg.getTextContent();
+    pages.push(tc.items.map(i=>({str:i.str,x:i.transform[4],y:i.transform[5]})));
+  }
+  return pages;
+}
+async function handleFiles(files){
+  const log=$('log');log.innerHTML='';
+  if(readOnly){toast('You have view-only access to this board.');return}
+  if(!window.pdfjsLib){log.innerHTML='<div class="err">The PDF reader did not load. Reload the page and try again.</div>';return}
+  const parsedList=[];
+  for(const f of files){
+    if(!/\.pdf$/i.test(f.name)&&f.type!=='application/pdf'){log.insertAdjacentHTML('beforeend',`<div class="err">${esc(f.name)}: not a PDF, skipped</div>`);continue}
+    try{
+      const parsed=parsePages(await readPdf(f),f.name);
+      parsed.cols.forEach(c=>state.cols.add(c));
+      parsedList.push({parsed,source:f.name});
+    }catch(e){log.insertAdjacentHTML('beforeend',`<div class="err">${esc(f.name)}: ${esc(e.message||'could not read')}</div>`)}
+  }
+  if(!parsedList.length){renderRules();render();return}
+  // skip stops that are already on the board, so re-dropping a sheet never doubles up
+  const have=new Set();
+  for(const it of state.items.values())for(const x of it.stops||[])have.add(deliveryKey(x.site||it.site,x));
+  const all=collectStops(parsedList,state.settings);
+  const fresh=all.filter(x=>!have.has(deliveryKey(x.site,x)));
+  const skipped=all.length-fresh.length;
+  const groups=groupStops(fresh,state.settings).map(summarize);
+  // pick labels: MMDD-NN, numbered per first delivery date
+  const used={};
+  for(const it of state.items.values()){const m=/^(\d{4})-(\d+)$/.exec(it.label||'');if(m)used[m[1]]=Math.max(used[m[1]]||0,+m[2])}
+  const now=Date.now(),base=now*1000,ap=num(state.settings.autoPri);
+  for(let k=0;k<groups.length;k++){
+    const g=groups[k],pre=labelPrefix(g.date),n=(used[pre]||0)+1;used[pre]=n;
+    const id=safeId(`P${now}_${k+1}`);
+    await writeDoc(id,{...g,id,label:`${pre}-${String(n).padStart(2,'0')}`,unit:state.settings.unit||'group',seq:base+k,
+      priority:ap>0&&g.weight>=ap?'Y':'N',status:'open',assignee:'',createdAt:now,importedAt:now,changedAt:now},false);
+  }
+  const wt=groups.reduce((t,g)=>t+g.weight,0);
+  log.insertAdjacentHTML('beforeend',`<div class="ok">${parsedList.map(p=>esc(p.source)).join(' → ')}: ${groups.length} new work item${groups.length===1?'':'s'} · ${fresh.length} stops · ${fmtW(wt)} LB</div>`);
+  if(skipped)log.insertAdjacentHTML('beforeend',`<div class="err">${skipped} stop${skipped===1?' was':'s were'} already on the board and skipped. Remove a group first if you want its stops regrouped.</div>`);
+  renderRules();render();
+}
+const drop=$('drop'),fileIn=$('file');
+drop.addEventListener('click',e=>{if(e.target===fileIn)return;fileIn.click()});
+drop.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();fileIn.click()}});
+fileIn.addEventListener('change',()=>{handleFiles([...fileIn.files]);fileIn.value=''});
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over')}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over')}));
+drop.addEventListener('drop',e=>handleFiles([...e.dataTransfer.files]));
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>{if(!drop.contains(e.target)){e.preventDefault();handleFiles([...e.dataTransfer.files])}});
+
+/* ---------- rules UI ---------- */
+function renderRulesHint(){
+  const s=state.settings,n=(s.rules||[]).filter(r=>r.col&&r.val!=='').length;
+  $('rulesHint').textContent=`${s.unit==='delivery'?'Per delivery':s.unit==='route'?'Per route':`Groups of ~${fmtW(num(s.target)||8000)} LB`} · ${n?n+' condition'+(n>1?'s':''):'all rows'} · auto priority ${num(s.autoPri)>0?'≥ '+fmtW(s.autoPri)+' LB':'off'} · ${s.consol===false?'consolidation off':`consolidate home patients <${fmtW(num(s.consolMax)||500)} LB within ${num(s.consolWindow)||3} stops`}`;
+}
+function renderRules(){
+  const s=state.settings;
+  $('unitGroup').checked=s.unit==='group'||!s.unit;$('unitRoute').checked=s.unit==='route';$('unitDelivery').checked=s.unit==='delivery';
+  if(document.activeElement!==$('target')) $('target').value=s.target||8000;
+  $('consolOn').checked=s.consol!==false;
+  if(document.activeElement!==$('consolMax')) $('consolMax').value=s.consolMax||500;
+  if(document.activeElement!==$('consolWindow')) $('consolWindow').value=s.consolWindow||3;
+  if(document.activeElement!==$('autoPri')) $('autoPri').value=s.autoPri||'';
+  const cols=[...state.cols];
+  $('ruleList').innerHTML=(s.rules||[]).map((r,i)=>`<div class="rule" data-i="${i}">
+    <select data-k="col" aria-label="Column">${cols.map(c=>`<option${c===r.col?' selected':''}>${esc(c)}</option>`).join('')}</select>
+    <select data-k="op" aria-label="Condition">${OPS.map(([v,l])=>`<option value="${v}"${v===r.op?' selected':''}>${l}</option>`).join('')}</select>
+    <input data-k="val" id="rv${i}" value="${esc(r.val)}" placeholder="value" aria-label="Value">
+    <button class="x" data-del="${i}" type="button" aria-label="Remove condition">×</button></div>`).join('');
+  renderRulesHint();
+}
+$('ruleList').addEventListener('input',e=>{
+  const row=e.target.closest('.rule');if(!row)return;const r=state.settings.rules[+row.dataset.i];r[e.target.dataset.k]=e.target.value;saveSettings();
+});
+$('ruleList').addEventListener('click',e=>{const d=e.target.dataset.del;if(d==null)return;state.settings.rules.splice(+d,1);renderRules();saveSettings()});
+$('addRule').addEventListener('click',()=>{(state.settings.rules=state.settings.rules||[]).push({col:'Total Weight',op:'ge',val:''});renderRules();saveSettings()});
+document.querySelectorAll('input[name=unit]').forEach(r=>r.addEventListener('change',()=>{state.settings.unit=r.value;saveSettings()}));
+$('autoPri').addEventListener('input',e=>{state.settings.autoPri=e.target.value;saveSettings()});
+$('target').addEventListener('input',e=>{state.settings.target=num(e.target.value)||8000;saveSettings()});
+$('consolOn').addEventListener('change',e=>{state.settings.consol=e.target.checked;saveSettings();render()});
+$('consolMax').addEventListener('input',e=>{state.settings.consolMax=num(e.target.value)||500;saveSettings();render()});
+$('consolWindow').addEventListener('input',e=>{state.settings.consolWindow=num(e.target.value)||3;saveSettings();render()});
+
+/* ---------- filters ---------- */
+$('fSite').addEventListener('change',e=>{state.f.site=e.target.value;render()});
+$('fDate').addEventListener('change',e=>{state.f.date=e.target.value;render()});
+$('fSearch').addEventListener('input',e=>{state.f.q=e.target.value.toLowerCase();render()});
+$('fPri').addEventListener('change',e=>{state.f.pri=e.target.checked;render()});
+$('chips').addEventListener('click',e=>{const c=e.target.closest('.tile');if(!c)return;state.f.status=c.dataset.s;render()});
+
+function visible(){
+  const f=state.f;
+  return [...state.items.values()].filter(i=>{
+    if(f.status==='late'){if(!isLate(i))return false}
+    else if(f.status!=='all'&&f.status!=='active'&&i.status!==f.status)return false;
+    if(f.status==='active'&&i.status==='done')return false;
+    if(f.site&&!(i.sites||[i.site]).includes(f.site))return false;
+    if(f.date&&!(i.dates||[i.date]).includes(f.date))return false;
+    if(f.pri&&i.priority!=='Y')return false;
+    if(f.q){const hay=[pickName(i),i.label,i.route,i.site,i.assignee,...(i.stops||[]).flatMap(s=>[s.name,s.city,s.delivery])].join(' ').toLowerCase();if(!hay.includes(f.q))return false}
+    return true;
+  }).sort((a,b)=>{
+    return (a.status==='done')-(b.status==='done')||(b.priority==='Y')-(a.priority==='Y')||(a.seq||a.createdAt*1000||0)-(b.seq||b.createdAt*1000||0)||String(a.id).localeCompare(b.id);
+  });
+}
+
+/* ---------- render ---------- */
+function opts(el,list,cur,allLabel){
+  el.innerHTML=`<option value="">${allLabel}</option>`+list.map(([v,l])=>`<option value="${esc(v)}"${v===cur?' selected':''}>${esc(l)}</option>`).join('');
+}
+function render(){
+  if(isFloor&&typeof renderFloor==='function'&&!$('floorView').hidden)renderFloor();
+  const all=[...state.items.values()];
+  // filter dropdowns
+  const sites=[...new Set(all.flatMap(i=>i.sites||[i.site]))].sort();
+  const dates=[...new Set(all.flatMap(i=>i.dates||[i.date]))].sort().reverse();
+  opts($('fSite'),sites.map(s=>[s,s]),state.f.site,'All MM routes');
+  opts($('fDate'),dates.map(d=>[d,fmtDate(d)+(d?'/'+d.slice(0,4):'')]),state.f.date,'All dates');
+  // chips (counts respect site/date/pri filters, not status)
+  const base=all.filter(i=>(!state.f.site||(i.sites||[i.site]).includes(state.f.site))&&(!state.f.date||(i.dates||[i.date]).includes(state.f.date))&&(!state.f.pri||i.priority==='Y'));
+  const count=s=>base.filter(i=>i.status===s).length;
+  const wOf=f=>fmtW(base.filter(f).reduce((t,i)=>t+(i.weight||0),0))+' LB';
+  const chipDefs=[['active','Still open',i=>i.status!=='done','var(--teal-dark)'],...STATUS.map(([s,l])=>[s,l,i=>i.status===s,`var(--bar-${s==='in_progress'?'progress':s})`]),['late','Open over 3 hrs',isLate,'var(--pri)'],['all','All',()=>true,'var(--line)']];
+  $('chips').innerHTML=chipDefs.map(([s,l,f,c])=>`<button class="tile" type="button" data-s="${s}" aria-pressed="${state.f.status===s}" style="--c:${c}"><span class="tl">${l}</span><span class="tn">${base.filter(f).length}</span><span class="tw">${wOf(f)}</span></button>`).join('');
+  // people
+  $('people').innerHTML=[...new Set(all.map(i=>i.assignee).filter(Boolean))].sort().map(p=>`<option value="${esc(p)}">`).join('');
+  const vis=visible();
+  const tw=vis.reduce((s,i)=>s+(i.weight||0),0), ts=vis.reduce((s,i)=>s+(i.stopCount||0),0);
+  const pri=vis.filter(i=>i.priority==='Y'&&i.status!=='done').length;
+  $('totals').textContent=`${vis.length} items · ${ts} stops · ${fmtW(tw)} LB${pri?` · ${pri} priority open`:''}`;
+  // rows
+  const ae=document.activeElement, keep=ae&&ae.dataset&&ae.dataset.who;
+  if(keep&&ae.closest('#rows'))return; // don't clobber typing; next render catches up
+  $('rows').innerHTML=vis.map(i=>{
+    const custs=(i.stops||[]).map(s=>s.name).filter(Boolean);
+    const sel=state.sel.has(i.id),open=state.open.has(i.id);
+    const when=i.status==='done'?i.doneAt:i.status==='open'?i.importedAt:i.changedAt;
+    const whenTxt=i.status==='done'?'Completed '+ago(i.doneAt)+(i.openMs!=null?` · open ${fmtDur(i.openMs)}`:''):i.status==='open'?'Added '+ago(i.importedAt||i.createdAt):(i.status==='assigned'?'Handed out ':'Started ')+ago(i.assignedAt||i.changedAt)+` · open ${fmtDur(openFor(i))}`;
+    const pal=palletsOf(i);
+    const late=isLate(i), lateDone=i.status==='done'&&i.openMs>LATE_MS;
+    let h=`<tr class="item${i.status==='done'?' isdone':''}${late?' late':''}" data-id="${esc(i.id)}">
+      <td><input type="checkbox" data-act="sel" ${sel?'checked':''} aria-label="Select ${esc(i.route)}"></td>
+      <td><button class="exp" data-act="exp" type="button" aria-expanded="${open}" aria-label="Show stops">${open?'▾':'▸'}</button></td>
+      <td><button class="pill ${i.priority==='Y'?'Y':'N'}" data-act="pri" type="button" aria-label="Priority ${i.priority}">${i.priority==='Y'?'Y':'N'}</button></td>
+      <td><div class="route">${esc(pickName(i))}${late?` <span class="late-tag">Open ${fmtDur(openFor(i))}</span>`:''}${i.weight>(num(state.settings.target)||8000)*1.05?` <span class="late-tag" title="One stop is heavier than the pick target">Over ${fmtW(num(state.settings.target)||8000)} LB</span>`:''}${pal.list.length?` <span class="pal-tag" title="Home patient orders to pick on one pallet">Consolidate ${pal.list.length} pallet${pal.list.length>1?'s':''}</span>`:''}</div><div class="site">${esc(siteRoutes(i).join(' + '))}</div></td>
+      <td class="mono">${(i.dates||[i.date]).map(fmtDate).join(', ')}</td>
+      <td class="num">${i.stopCount||0}</td>
+      <td class="num">${fmtW(i.weight)}</td>
+      <td><div class="cust" title="${esc(custs.join(', '))}">${esc(custs.slice(0,3).join(', '))}${custs.length>3?` +${custs.length-3}`:''}</div></td>
+      <td><input class="inp" data-who="1" id="who-${esc(i.id)}" list="people" value="${esc(i.assignee)}" placeholder="Name" aria-label="Handed out to"></td>
+      <td><select class="status ${i.status}" data-act="status" id="st-${esc(i.id)}" aria-label="Status">${STATUS.map(([v,l])=>`<option value="${v}"${v===i.status?' selected':''}>${l}</option>`).join('')}</select></td>
+      <td class="when${late||lateDone?' over':''}" title="${when?new Date(when).toLocaleString():''}">${whenTxt}</td>
+      <td><button class="btn small" data-act="print" type="button">Print</button>${i.printedAt?`<div class="site" title="${new Date(i.printedAt).toLocaleString()}">Printed ${ago(i.printedAt)}</div>`:''}</td></tr>`;
+    if(open){
+      h+=`<tr class="stops"><td colspan="12"><div style="overflow-x:auto"><table class="stoptable"><thead><tr><th>Pallet</th><th>Route</th><th>Stop</th><th>Delivery</th><th>Ship-to</th><th>Customer</th><th>City</th><th class="num">Weight</th></tr></thead><tbody>${(i.stops||[]).map((s,k)=>`<tr${pal.byIdx.has(k)?' class="pal-row"':''}><td>${pal.byIdx.has(k)?`<span class="pal-badge">${pal.byIdx.get(k)}</span>`:''}</td><td class="mono">${esc(s.route||i.route)}</td><td class="mono">${esc(s.stop)}</td><td class="mono">${esc(s.delivery)}</td><td class="mono">${esc(s.shipTo)}</td><td>${esc(s.name)}</td><td>${esc(s.city)}</td><td class="num">${Number(s.weight).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1})} ${esc(s.unit)}</td></tr>`).join('')}</tbody></table></div><div class="site" style="padding:6px 10px">From ${esc(i.source||'')}</div></td></tr>`;
+    }
+    return h;
+  }).join('');
+  $('empty').hidden=vis.length>0;
+  if(!vis.length&&all.length){$('empty').innerHTML='<strong>Nothing matches</strong>Change the filters above to see more routes.'}
+  else $('empty').innerHTML='<strong>No routes yet</strong>Drop today\'s RoadNet route PDFs above and each route becomes a work item.';
+  $('selAll').checked=vis.length>0&&vis.every(i=>state.sel.has(i.id));
+  // bulk bar
+  [...state.sel].forEach(id=>{if(!state.items.has(id))state.sel.delete(id)});
+  $('bulk').hidden=state.sel.size===0;
+  $('bulkCount').textContent=`${state.sel.size} selected`;
+}
+
+/* ---------- row actions ---------- */
+const sameName=(a,b)=>String(a||'').trim().toLowerCase()===String(b||'').trim().toLowerCase();
+function fmtDur(ms){
+  if(ms==null||!isFinite(ms)||ms<0)return '';
+  const m=Math.round(ms/60000);if(m<60)return m+'m';
+  const h=Math.floor(m/60);if(h<24)return `${h}h ${m%60}m`;
+  return `${Math.floor(h/24)}d ${h%24}h`;
+}
+function donePatch(i,now){
+  const start=i.assignedAt||(i.status!=='open'?i.changedAt:null);
+  return {status:'done',doneAt:now,changedAt:now,openMs:start?now-start:null};
+}
+function setStatus(id,status){
+  const i=state.items.get(id);if(!i||i.status===status)return;
+  const now=Date.now();
+  if(status==='done')return writeDoc(id,donePatch(i,now),true);
+  const patch={status,changedAt:now};
+  if(status==='open'){patch.assignee='';patch.assignedAt=null;patch.openMs=null;patch.doneAt=null}
+  if((status==='assigned'||status==='in_progress')&&!i.assignedAt)patch.assignedAt=now;
+  return writeDoc(id,patch,true);
+}
+/* One active assignment per person: handing new work to a name closes that name's earlier open assignment. */
+async function closePrior(name,exceptIds){
+  if(!name)return [];
+  const now=Date.now(),closed=[];
+  for(const o of [...state.items.values()]){
+    if(exceptIds.has(o.id)||!sameName(o.assignee,name))continue;
+    if(o.status!=='assigned'&&o.status!=='in_progress')continue;
+    const p=donePatch(o,now);await writeDoc(o.id,p,true);closed.push(`${pickName(o)} (open ${fmtDur(p.openMs)||'n/a'})`);
+  }
+  return closed;
+}
+async function setWho(id,name){
+  const i=state.items.get(id);if(!i)return;name=name.trim();if(name===(i.assignee||''))return;
+  const now=Date.now(),patch={assignee:name,changedAt:now};
+  if(name&&(i.status==='open'||i.status==='assigned')){patch.status='assigned';patch.assignedAt=now}
+  if(!name&&i.status==='assigned'){patch.status='open';patch.assignedAt=null}
+  const closed=await closePrior(name,new Set([id]));
+  await writeDoc(id,patch,true);
+  if(closed.length)toast(`Completed ${name}'s earlier pick: ${closed.join(', ')}`);
+}
+$('rows').addEventListener('click',e=>{
+  const tr=e.target.closest('tr.item');if(!tr)return;const id=tr.dataset.id,act=e.target.dataset.act;
+  if(act==='pri'){const i=state.items.get(id);writeDoc(id,{priority:i.priority==='Y'?'N':'Y'},true)}
+  if(act==='exp'){state.open.has(id)?state.open.delete(id):state.open.add(id);render()}
+  if(act==='print'){printTickets([state.items.get(id)])}
+});
+$('rows').addEventListener('change',e=>{
+  const tr=e.target.closest('tr.item');if(!tr)return;const id=tr.dataset.id;
+  if(e.target.dataset.act==='sel'){e.target.checked?state.sel.add(id):state.sel.delete(id);render()}
+  if(e.target.dataset.act==='status')setStatus(id,e.target.value);
+  if(e.target.dataset.who){setWho(id,e.target.value);e.target.blur()}
+});
+$('rows').addEventListener('keydown',e=>{if(e.target.dataset.who&&e.key==='Enter')e.target.blur()});
+$('rows').addEventListener('focusout',e=>{if(e.target.dataset.who)setTimeout(render,0)});
+$('selAll').addEventListener('change',e=>{const v=visible();v.forEach(i=>e.target.checked?state.sel.add(i.id):state.sel.delete(i.id));render()});
+
+/* ---------- bulk ---------- */
+async function eachSel(fn){for(const id of [...state.sel])await fn(id)}
+$('bulkAssign').addEventListener('click',async()=>{const w=$('bulkWho').value.trim();if(!w){$('bulkWho').focus();return}
+  const closed=await closePrior(w,new Set(state.sel));
+  await eachSel(id=>{const i=state.items.get(id),now=Date.now();const p={assignee:w,changedAt:now};if(i.status==='open'||i.status==='assigned'){p.status='assigned';p.assignedAt=now}return writeDoc(id,p,true)});
+  toast(`Handed ${state.sel.size} to ${w}`+(closed.length?`. Completed earlier: ${closed.join(', ')}`:''));state.sel.clear();$('bulkWho').value='';render()});
+$('bulkPriY').addEventListener('click',()=>eachSel(id=>writeDoc(id,{priority:'Y'},true)));
+$('bulkPriN').addEventListener('click',()=>eachSel(id=>writeDoc(id,{priority:'N'},true)));
+$('bulkDone').addEventListener('click',async()=>{await eachSel(id=>setStatus(id,'done'));state.sel.clear();render()});
+$('bulkClear').addEventListener('click',()=>{state.sel.clear();render()});
+$('bulkDelWrap').addEventListener('click',async e=>{
+  const w=$('bulkDelWrap');
+  if(e.target.id==='bulkDel'){w.innerHTML=`<span class="confirm">Remove ${state.sel.size}? <button class="btn danger" id="bulkDelYes" type="button">Yes, remove</button><button class="btn" id="bulkDelNo" type="button">Cancel</button></span>`}
+  else if(e.target.id==='bulkDelYes'){const n=state.sel.size;await eachSel(removeDoc);state.sel.clear();resetDel();render();toast(`Removed ${n}`)}
+  else if(e.target.id==='bulkDelNo'){resetDel()}
+});
+function resetDel(){$('bulkDelWrap').innerHTML='<button class="btn danger" id="bulkDel" type="button">Remove</button>'}
+
+/* ---------- pick tickets (PDF) ---------- */
+const siteRoutes=it=>{const seen=new Set(),out=[];for(const st of it.stops||[]){const k=(st.site||(it.sites||[it.site])[0])+' '+(st.route||it.route);if(!seen.has(k)){seen.add(k);out.push(k)}}return out.length?out:[it.site+' '+it.route]};
+const usDate=iso=>{if(!iso)return '';const [y,m,d]=iso.split('-');return `${m}/${d}/${y}`};
+function barcodePng(value){
+  const c=document.createElement('canvas');
+  JsBarcode(c,String(value),{format:'CODE128',width:3,height:80,displayValue:false,margin:0,background:'#ffffff',lineColor:'#000000'});
+  return c.toDataURL('image/png');
+}
+function drawTicket(doc,it){
+  const W=612,H=792,M=40,R=W-M;
+  const stamp=new Date().toLocaleString('en-US',{month:'numeric',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+  const header=(cont)=>{
+    let y=M;
+    doc.setTextColor(0);doc.setFont('helvetica','bold');doc.setFontSize(9);
+    doc.text('PICK TICKET'+(cont?' (CONTINUED)':''),M,y+8);
+    doc.setFont('helvetica','normal');doc.text(`${it.site}  ·  Printed ${stamp}`,R,y+8,{align:'right'});
+    y+=14;doc.setDrawColor(23,74,91);doc.setLineWidth(2.5);doc.line(M,y,R,y);doc.setDrawColor(0);y+=30;
+    doc.setFont('times','bold');doc.setTextColor(23,74,91);{const t='PICK '+pickName(it),room=R-M-(it.priority==='Y'?104:0);let f=26;doc.setFontSize(f);while(f>12&&doc.getTextWidth(t)>room){f--;doc.setFontSize(f)}doc.text(t,M,y)}doc.setTextColor(0);
+    doc.setFont('helvetica','normal');doc.setFontSize(11);doc.text(doc.splitTextToSize('Routes: '+siteRoutes(it).join(' + '),R-M-110)[0],M,y+18);
+    if(it.priority==='Y'){doc.setFillColor(0,0,0);doc.rect(R-92,y-22,92,28,'F');doc.setTextColor(255);doc.setFontSize(13);doc.text('PRIORITY',R-46,y-3,{align:'center'});doc.setTextColor(0)}
+    return y+30;
+  };
+  let y=header(false);
+  // info grid
+  const fmt1=n=>Number(n).toLocaleString('en-US',{minimumFractionDigits:1,maximumFractionDigits:1});
+  const info=[[(it.routes||[]).length>1?'RoadNet Routes':'RoadNet Route',(it.routes||[it.route]).join(', ')],['Delivery date',(it.dates||[it.date]).map(usDate).join(', ')],['Total weight',`${fmt1(it.weight)} LB`],['Ship-tos',String(it.stopCount)],
+    [(it.sites||[]).length>1?'MM Routes':'MM Route',it.site],['Priority',it.priority==='Y'?'Y':'N'],['Handed out to',it.assignee||''],['Ticket ID',it.id]];
+  const gw=(R-M)/4,rh=36;
+  doc.setLineWidth(.75);
+  info.forEach(([k,v],n)=>{
+    const x=M+(n%4)*gw,yy=y+Math.floor(n/4)*rh;
+    doc.rect(x,yy,gw,rh);
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);doc.text(k.toUpperCase(),x+6,yy+11);
+    doc.setFont('helvetica','bold');doc.setFontSize(k==='Ticket ID'?7.5:(k==='Total weight'?14:12));
+    doc.text(doc.splitTextToSize(String(v||''),gw-12)[0]||'',x+6,yy+27);
+  });
+  y+=rh*2+16;
+  const pal=palletsOf(it);
+  if(pal.list.length){
+    doc.setFont('helvetica','normal');doc.setFontSize(8.5);
+    const lines=doc.splitTextToSize(pal.list.map(p=>`${p.letter}: ship-tos ${p.stops.map(x=>x.shipTo).join(' + ')} (${fmt1(p.weight)} LB)`).join('      '),R-M-24);
+    const boxH=20+lines.length*13;
+    doc.setFillColor(230,242,245);doc.rect(M,y,R-M,boxH,'F');doc.setFillColor(23,74,91);doc.rect(M,y,4,boxH,'F');
+    doc.setTextColor(23,74,91);doc.setFont('helvetica','bold');doc.setFontSize(9);doc.text('CONSOLIDATE ON ONE PALLET  (2 home patient orders per pallet)',M+12,y+13);
+    doc.setFont('helvetica','normal');doc.setFontSize(8.5);lines.forEach((l,n)=>doc.text(l,M+12,y+26+n*13));
+    doc.setTextColor(0);y+=boxH+10;
+  }
+  // ship-to table, always fit on one page: shrink rows, then use two columns
+  const stops=it.stops||[],n=Math.max(1,stops.length);
+  const headH=18,totalH=30,bottom=H-62-30;
+  const avail=bottom-totalH-y-headH;
+  const cols=n*30<=avail?1:2, perCol=Math.ceil(n/cols);
+  const rowH=Math.min(42,avail/perCol), gap=14, cw=(R-M-(cols-1)*gap)/cols;
+  const fs=rowH>=34?9:8, bh=Math.max(10,Math.min(20,rowH-(fs+8)));
+  for(let c=0;c<cols;c++){
+    const x0=M+c*(cw+gap), rx=x0+(cols===1?60:42), bx=x0+(cols===1?120:82), bw=cols===1?100:Math.min(80,cw-82-100);
+    const nx=cols===1?x0+234:null, nw=cols===1?150:0, dx=cols===1?x0+398:bx+bw+8, wr=x0+cw-4;
+    doc.setFillColor(238,242,246);doc.rect(x0,y,cw,headH,'F');doc.setDrawColor(23,74,91);doc.setLineWidth(1.5);doc.line(x0,y+headH,x0+cw,y+headH);doc.setDrawColor(0);
+    doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(23,74,91);
+    if(cols===1)doc.text('MM ROUTE',x0+4,y+12);else{doc.setFontSize(7);doc.text('MM',x0+4,y+8);doc.text('ROUTE',x0+4,y+15);doc.setFontSize(8)}doc.text('ROUTE',rx,y+12);doc.text('SHIP-TO',bx,y+12);if(cols===1)doc.text('SHIP-TO NAME',nx,y+12);doc.text(cols===1?'DELIVERY':'NAME',dx,y+12);doc.text('WT (LB)',wr,y+12,{align:'right'});doc.setTextColor(0);
+    let ry=y+headH,prev=null;
+    for(const [k0,st] of stops.slice(c*perCol,(c+1)*perCol).entries()){
+      const L=pal.byIdx.get(c*perCol+k0);
+      const rt=st.route||it.route, sit=st.site||(it.sites||[it.site])[0];
+      if(prev!==null&&rt!==prev){doc.setLineWidth(1.5);doc.line(x0,ry,x0+cw,ry)}
+      prev=rt;
+      const mid=ry+rowH/2+fs/3;
+      if(L){doc.setFillColor(23,74,91);doc.rect(x0+1,ry+rowH/2-6,12,12,'F');doc.setTextColor(255);doc.setFont('helvetica','bold');doc.setFontSize(8);doc.text(L,x0+7,ry+rowH/2+3,{align:'center'});doc.setTextColor(0)}
+      doc.setFont('helvetica','normal');doc.setFontSize(fs);doc.text(String(sit),x0+(L?16:4),mid);doc.setFont('helvetica','bold');doc.text(String(rt),rx,mid);
+      if(st.shipTo){
+        doc.addImage(barcodePng(st.shipTo),'PNG',bx,ry+3,bw,bh);
+        doc.setFont('courier','bold');doc.setFontSize(fs);doc.text(String(st.shipTo),bx+bw/2,ry+3+bh+fs,{align:'center'});
+      }
+      if(cols===1){doc.setFont('helvetica','bold');doc.setFontSize(fs);doc.text(doc.splitTextToSize(String(st.name||''),nw).slice(0,2),nx,ry+rowH/2-(doc.splitTextToSize(String(st.name||''),nw).length>1?fs*0.3:-fs/3))}
+      doc.setFont('helvetica','normal');doc.setFontSize(fs);
+      if(cols===1)doc.text(String(st.delivery||''),dx,mid);
+      else{doc.setFont('helvetica','bold');doc.setFontSize(7);const nl=doc.splitTextToSize(String(st.name||''),wr-30-dx).slice(0,2);doc.text(nl,dx,ry+rowH/2-(nl.length>1?5:1));doc.setFont('helvetica','normal');doc.setFontSize(6.5);doc.text(String(st.delivery||''),dx,ry+rowH/2+(nl.length>1?12:8));doc.setFontSize(fs)}
+      doc.setFont('helvetica','bold');doc.text(fmt1(st.weight),wr,mid,{align:'right'});
+      ry+=rowH;doc.setLineWidth(.5);doc.line(x0,ry,x0+cw,ry);
+    }
+  }
+  y+=headH+perCol*rowH;
+  doc.setLineWidth(1.5);doc.line(M,y+1,R,y+1);
+  doc.setFont('helvetica','bold');doc.setFontSize(12);
+  doc.text('TOTAL WEIGHT',R-150,y+20,{align:'right'});
+  doc.text(`${fmt1(it.weight)} LB`,R-6,y+20,{align:'right'});
+  // sign-off
+  const fy=H-62;doc.setLineWidth(.75);doc.setFont('helvetica','normal');doc.setFontSize(8.5);
+  [['Picked by',M],['Checked by',M+190],['Date / time',M+380]].forEach(([t,x])=>{doc.line(x,fy,x+150,fy);doc.text(t,x,fy+12)});
+}
+async function printTickets(items){
+  items=items.filter(Boolean);if(!items.length)return;
+  if(!window.jspdf||!window.JsBarcode){toast('The ticket printer did not load. Reload the page and try again.');return false}
+  const doc=new window.jspdf.jsPDF({unit:'pt',format:'letter'});
+  items.forEach((it,n)=>{if(n)doc.addPage();drawTicket(doc,it)});
+  const one=items[0];
+  const name=items.length===1?`pick-ticket-${safeId(pickName(one)).replace(/-+/g,'-')}.pdf`:`pick-tickets-${items.length}-${new Date().toISOString().slice(0,10)}.pdf`;
+  if(!downloads){
+    // Running outside claude.ai: open the ticket with a print command attached.
+    // With Chrome started using --kiosk-printing this prints straight to the default printer.
+    try{
+      doc.autoPrint();
+      const w=window.open(doc.output('bloburl'),'_blank');
+      if(!w)doc.save(name);
+      const now=Date.now();for(const it of items)await writeDoc(it.id,{printedAt:now},true);
+      return true;
+    }catch(e){toast('The ticket could not be opened. Try again.');return false}
+  }
+  try{
+    const r=await downloads.save({filename:name,data:doc.output('blob')});
+    if(r&&r.status==='saved'){const now=Date.now();for(const it of items)await writeDoc(it.id,{printedAt:now},true);return true}
+  }catch(e){if(!e||e.code!=='declined')toast('The ticket was not saved. Try again.')}
+  return false;
+}
+window.__drawTicket=drawTicket;
+$('bulkPrint').addEventListener('click',()=>printTickets(visible().filter(i=>state.sel.has(i.id))));
+
+/* ---------- export ---------- */
+$('exportBtn').addEventListener('click',async()=>{
+  const rows=[['Priority','MM Route','Pick (routes)','Date','Stops','Weight LB','Handed out to','Status','Handed out at','Completed at','Time open','Customers']];
+  visible().forEach(i=>rows.push([i.priority,i.site,pickName(i)+' ('+i.route+')',(i.dates||[i.date]).join(' '),i.stopCount,Math.round(i.weight),i.assignee||'',STATUS_LABEL[i.status],i.assignedAt?new Date(i.assignedAt).toLocaleString():'',i.doneAt&&i.status==='done'?new Date(i.doneAt).toLocaleString():'',i.status==='done'?fmtDur(i.openMs):'',(i.stops||[]).map(s=>s.name).join('; ')]));
+  const csv=rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\r\n');
+  try{await downloads.save({filename:`route-work-${new Date().toISOString().slice(0,10)}.csv`,data:csv})}catch(e){if(e&&e.code!=='declined')toast('Export was not saved.')}
+});
+
+/* ---------- employee screen ---------- */
+const queueOrder=(a,b)=>(b.priority==='Y')-(a.priority==='Y')||(a.seq||a.createdAt*1000||0)-(b.seq||b.createdAt*1000||0)||String(a.id).localeCompare(b.id);
+const waiting=()=>[...state.items.values()].filter(i=>i.status==='open').sort(queueOrder);
+let floorItem=null,floorTimer=null;
+function renderFloor(){
+  const n=waiting().length,pri=waiting().filter(i=>i.priority==='Y').length;
+  $('floorWait').textContent=n?`${n} pick${n===1?'':'s'} waiting${pri?` · ${pri} priority`:''}`:'No picks waiting right now.';
+  $('floorMode').textContent=$('mode').textContent;
+}
+function floorReset(){
+  clearTimeout(floorTimer);floorItem=null;$('floorResult').hidden=true;$('floorForm').hidden=false;
+  $('floorName').value='';$('floorGo').disabled=false;$('floorFinish').disabled=false;renderFloor();
+  if(isFloor())setTimeout(()=>$('floorName').focus(),50);
+}
+async function claim(it,name){
+  // short lease so two stations can't hand out the same pick at the same moment
+  if(db){
+    try{
+      const ref=db.doc('work/'+it.id),lease=await ref.acquire({holder:name+'-'+Math.random().toString(36).slice(2,8),ttlMs:5000});
+      if(!lease.acquired)return false;
+      const cur=await ref.get();if(!cur.exists||cur.data().status!=='open')return false;
+    }catch(e){return false}
+  }
+  const now=Date.now();
+  await writeDoc(it.id,{assignee:name,status:'assigned',assignedAt:now,changedAt:now},true);
+  return true;
+}
+function showResult(name,it,closed){
+  $('floorForm').hidden=true;$('floorResult').hidden=false;
+  $('frFor').textContent=it?`Next pick for ${name}`:`Thanks, ${name}`;
+  if(it){
+    $('frPick').innerHTML=esc(pickName(it))+(it.priority==='Y'?'<span class="pri-tag">PRIORITY</span>':'');
+    $('frRoutes').textContent='Routes: '+siteRoutes(it).join(' + ');
+    $('frStats').innerHTML=`<span>${it.stopCount} ship-to${it.stopCount===1?'':'s'}</span><span>${fmtW(it.weight)} LB</span>`;
+    const pl=palletsOf(it);$('frPal').hidden=!pl.list.length;
+    $('frPal').innerHTML=pl.list.map(p=>`<b>Pallet ${p.letter}:</b> pick these 2 home patient orders on one pallet (ship-tos ${p.stops.map(x=>esc(x.shipTo)).join(', ')} · ${fmtW(p.weight)} LB)`).join('<br>');
+  }else{$('frPal').hidden=true;$('frPick').textContent='No new pick';$('frRoutes').textContent='';$('frStats').textContent=''}
+  const c=$('frClosed');c.className='floor-closed';
+  if(closed.length){c.hidden=false;c.textContent=`Marked complete: ${closed.join(', ')}`}
+  else if(it===null){c.hidden=false;c.classList.add('warn');c.textContent='You had no open pick to close.'}
+  else c.hidden=true;
+  $('frPrint').hidden=!it;$('frHint').hidden=!it;
+  clearTimeout(floorTimer);floorTimer=setTimeout(floorReset,45000);
+}
+$('floorForm').addEventListener('submit',async e=>{
+  e.preventDefault();
+  let name=$('floorName').value.trim().replace(/\s+/g,' ');if(!name)return;
+  const known=[...state.items.values()].map(i=>i.assignee).find(x=>x&&sameName(x,name));if(known)name=known;
+  if(readOnly){toast('This screen has view-only access. Ask your lead to share the board with Contributor access.');return}
+  $('floorGo').disabled=true;$('floorFinish').disabled=true;
+  try{
+    let got=null;
+    for(const it of waiting()){if(await claim(it,name)){got=state.items.get(it.id);break}}
+    if(!got){toast('No picks are waiting right now. See your lead.');$('floorGo').disabled=false;$('floorFinish').disabled=false;return}
+    const closed=await closePrior(name,new Set([got.id]));
+    floorItem=got;showResult(name,got,closed);
+    printTickets([got]); // opens the save prompt right away
+  }finally{$('floorGo').disabled=false;$('floorFinish').disabled=false}
+});
+$('floorFinish').addEventListener('click',async()=>{
+  const name=$('floorName').value.trim().replace(/\s+/g,' ');if(!name){$('floorName').focus();return}
+  const closed=await closePrior(name,new Set());
+  showResult(name,null,closed);
+});
+$('frPrint').addEventListener('click',()=>{if(floorItem)printTickets([state.items.get(floorItem.id)||floorItem])});
+$('frDone').addEventListener('click',floorReset);
+function isFloor(){return location.hash==='#floor'}
+function route(){
+  const f=isFloor();$('floorView').hidden=!f;$('boardView').hidden=f;
+  if(f)floorReset();else render();
+}
+window.addEventListener('hashchange',route);
+
+/* ---------- boot ---------- */
+setInterval(()=>{if(!document.activeElement||!document.activeElement.closest('#rows'))render()},60000);
+renderRules();route();
+(async()=>{
+  const c=window.claude;
+  db=c&&c.use?await c.use('db').catch(()=>null):null;
+  if(db){
+    $('mode').innerHTML='<b>●</b> Shared board · live for everyone with the link';
+    db.collection('work').onSnapshot(snap=>{
+      state.items=new Map(snap.docs.map(d=>[d.id,{...d.data(),id:d.id}]));render();
+    },()=>{$('mode').innerHTML='<b class="local">●</b> Lost connection. Reload to reconnect.'});
+    db.doc('config/settings').onSnapshot(s=>{
+      if(s.exists&&!document.activeElement.closest('.rules')){const d=s.data();state.settings={unit:d.unit||'group',target:num(d.target)||8000,rules:(d.rules||[]).map(r=>({...r})),autoPri:d.autoPri||'',consol:d.consol!==false,consolMax:num(d.consolMax)||500,consolWindow:num(d.consolWindow)||3};renderRules()}
+    },()=>{});
+    try{const u=await c.use('user');const can=u&&await u.can('data.write');if(can===false){readOnly=true;$('mode').innerHTML+=' · view only'}}catch(e){}
+  }else{
+    lsLoad();renderRules();render();
+    $('mode').innerHTML='<b class="local">●</b> Saved in this browser only';
+  }
+  downloads=c&&c.use?await c.use('downloads').catch(()=>null):null;
+  $('exportBtn').hidden=!downloads;
+})();
+</script>
+
+</body>
+</html>
