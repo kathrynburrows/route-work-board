@@ -4,22 +4,146 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <!--
-  Route Work Board (standalone copy)
-  Built with plain HTML, CSS and JavaScript. Styled to match the Kenco report email template (Georgia/Verdana, navy band).
-  Libraries loaded from cdnjs:
-    pdf.js 3.11.174   reads the RoadNet route PDFs in the browser
-    jsPDF 2.5.1       builds the pick ticket PDF
-    JsBarcode 3.11.6  draws the Code 128 ship-to barcodes
-  Storage: on claude.ai it uses the artifact's shared database (claude.use("db")).
-  Opened anywhere else it falls back to this browser's local storage, so data is
-  NOT shared between PCs. To share across PCs, replace writeDoc(), removeDoc(),
-  saveSettings() and the onSnapshot() listeners in the boot section with calls to
-  your own backend (for example a SharePoint list or a small server).
-  Printing outside claude.ai: tickets open with a print command. Start Chrome with
-  --kiosk-printing to send them straight to the default printer.
-  Employee screen: open this file with #floor at the end of the address.
+  Route Work Board - GitHub Pages + SharePoint list version
+  1. Fill in SP_CONFIG in the script below (client ID, tenant ID, site, list name).
+  2. Upload this file to GitHub as index.html and turn on GitHub Pages.
+  Board: your Pages link.  Pick Station: the same link with #floor at the end.
+  Libraries (cdnjs / jsdelivr): pdf.js 3.11.174, jsPDF 2.5.1, JsBarcode 3.11.6, MSAL Browser 3.27.0.
 -->
 <style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px/1.45 system-ui,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+<script>
+/* ===== SharePoint storage for the Route Work Board =====
+   Fill in SP_CONFIG below. Leave clientId empty to run in "this browser only" mode.
+   Everything is stored in one SharePoint list with two text columns:
+     Title  (built in)                  -> record key, e.g. "work/P1792776385549_1" or "config/settings"
+     Data   (Multiple lines of text,     -> the record as JSON
+             plain text)
+   Every open board re-reads the list every few seconds, so all PCs stay in sync. */
+window.SP_CONFIG = {
+  clientId: '2453813d-9bdd-4aa0-ba93-fb12cf101355',                               // Application (client) ID from the Entra app registration
+  tenantId: 'c3bb6185-0aaa-4e51-9606-7cdde5ad722d',                               // Directory (tenant) ID
+  siteHost: 'kencogroup1.sharepoint.com',     // SharePoint host name
+  sitePath: '/sites/TM-FieldEngineering',     // site that holds the list
+  listName: 'RouteWork',                      // list display name
+  pollSeconds: 10                             // how often each PC checks for changes
+};
+
+window.SPDB = (function () {
+  const cfg = window.SP_CONFIG, GRAPH = 'https://graph.microsoft.com/v1.0', SCOPES = ['Sites.ReadWrite.All'];
+  let app, account, siteId, listId;
+  const cache = new Map();                    // key -> {itemId, etag, data}
+  const workListeners = new Set(), docListeners = new Map();
+
+  async function token() {
+    const req = { scopes: SCOPES, account };
+    try { return (await app.acquireTokenSilent(req)).accessToken; }
+    catch (e) { await app.acquireTokenRedirect(req); throw e; }
+  }
+  async function g(method, path, body, headers) {
+    const r = await fetch(path.startsWith('http') ? path : GRAPH + path, {
+      method,
+      headers: Object.assign({ Authorization: 'Bearer ' + await token(), 'Content-Type': 'application/json' }, headers || {}),
+      body: body ? JSON.stringify(body) : undefined
+    });
+    if (r.status === 412) { const e = new Error('Someone else changed this first'); e.code = 'conflict'; throw e; }
+    if (!r.ok) {
+      const t = await r.text(); const e = new Error('SharePoint ' + r.status + ': ' + t.slice(0, 160));
+      e.code = (r.status === 401 || r.status === 403) ? 'invalid_argument' : 'unavailable'; throw e;
+    }
+    return r.status === 204 ? null : r.json();
+  }
+  const items = () => `/sites/${siteId}/lists/${listId}/items`;
+  const snap = (key, v) => ({ id: key.split('/')[1], exists: !!(v && v.data), data: () => (v && v.data) || undefined, metadata: {} });
+  function parse(it) {
+    let data = null; try { data = JSON.parse(it.fields.Data || 'null'); } catch (e) {}
+    return { itemId: it.id, etag: it['@odata.etag'] || it.eTag, data };
+  }
+  function emit() {
+    const docs = [...cache.entries()].filter(([k, v]) => k.startsWith('work/') && v.data).map(([k, v]) => snap(k, v));
+    workListeners.forEach(fn => fn({ docs, size: docs.length, empty: !docs.length, docChanges: () => [], metadata: {} }));
+    docListeners.forEach((set, k) => set.forEach(fn => fn(snap(k, cache.get(k)))));
+  }
+  async function refresh() {
+    let url = `${items()}?$expand=fields($select=Title,Data)&$top=999`; const seen = new Set();
+    while (url) {
+      const res = await g('GET', url);
+      for (const it of res.value) { const key = it.fields && it.fields.Title; if (!key) continue; seen.add(key); cache.set(key, parse(it)); }
+      url = res['@odata.nextLink'] || null;
+    }
+    for (const k of [...cache.keys()]) if (!seen.has(k)) cache.delete(k);
+    emit();
+  }
+  async function fresh(key) {
+    const c = cache.get(key); if (!c) return null;
+    const v = parse(await g('GET', `${items()}/${c.itemId}?$expand=fields($select=Title,Data)`));
+    cache.set(key, v); return v;
+  }
+  async function write(key, data, merge, ifMatch) {
+    let c = cache.get(key);
+    if (merge) {
+      c = (await fresh(key).catch(() => null)) || c;
+      if (!c) { const e = new Error('Record no longer exists'); e.code = 'unavailable'; throw e; }
+      data = Object.assign({}, c.data, data);
+    }
+    const body = JSON.stringify(data);
+    if (c && c.itemId) {
+      const res = await g('PATCH', `${items()}/${c.itemId}/fields`, { Data: body }, ifMatch ? { 'If-Match': ifMatch } : undefined);
+      cache.set(key, { itemId: c.itemId, etag: (res && res['@odata.etag']) || c.etag, data });
+    } else {
+      const it = await g('POST', items(), { fields: { Title: key, Data: body } });
+      cache.set(key, { itemId: it.id, etag: it['@odata.etag'], data });
+    }
+    emit();
+  }
+  function doc(path) {
+    return {
+      id: path.split('/')[1], path,
+      set: d => write(path, d, false),
+      update: d => write(path, d, true),
+      delete: async () => { const c = cache.get(path); if (c) { await g('DELETE', `${items()}/${c.itemId}`); cache.delete(path); emit(); } },
+      get: async () => snap(path, (await fresh(path).catch(() => null)) || cache.get(path)),
+      // Only one Pick Station can win the same pick: the write only succeeds if nobody changed it since we read it.
+      acquire: async () => {
+        const v = await fresh(path); if (!v || !v.data) return { acquired: false };
+        try { await write(path, Object.assign({}, v.data, { leaseAt: Date.now() }), false, v.etag); return { acquired: true }; }
+        catch (e) { if (e.code === 'conflict') return { acquired: false }; throw e; }
+      },
+      onSnapshot: (fn) => {
+        if (!docListeners.has(path)) docListeners.set(path, new Set());
+        docListeners.get(path).add(fn); setTimeout(emit, 0);
+        return () => docListeners.get(path).delete(fn);
+      }
+    };
+  }
+  async function connect() {
+    if (!cfg.clientId || !cfg.tenantId) return null;
+    if (!window.msal) throw new Error('Microsoft sign-in library did not load');
+    app = new msal.PublicClientApplication({
+      auth: { clientId: cfg.clientId, authority: 'https://login.microsoftonline.com/' + cfg.tenantId, redirectUri: location.origin + location.pathname },
+      cache: { cacheLocation: 'localStorage' }
+    });
+    await app.initialize();
+    const r = await app.handleRedirectPromise();
+    account = (r && r.account) || app.getAllAccounts()[0];
+    if (!account) { await app.loginRedirect({ scopes: SCOPES }); return new Promise(() => {}); }
+    siteId = (await g('GET', `/sites/${cfg.siteHost}:${cfg.sitePath}`)).id;
+    const lists = await g('GET', `/sites/${siteId}/lists?$filter=displayName eq '${cfg.listName.replace(/'/g, "''")}'`);
+    if (!lists.value.length) throw new Error(`List "${cfg.listName}" was not found on ${cfg.sitePath}`);
+    listId = lists.value[0].id;
+    await refresh();
+    setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, Math.max(5, cfg.pollSeconds || 10) * 1000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh().catch(() => {}); });
+    return {
+      userName: account.name || account.username,
+      doc,
+      collection: (p) => ({ onSnapshot: (fn) => { workListeners.add(fn); setTimeout(emit, 0); return () => workListeners.delete(fn); } })
+    };
+  }
+  return { connect };
+})();
+
+</script>
 </head>
 <body>
 <title>Route Work Board</title>
@@ -910,7 +1034,9 @@ $('exportBtn').addEventListener('click',async()=>{
   const rows=[['Priority','MM Route','Pick (routes)','Date','Stops','Weight LB','Handed out to','Status','Handed out at','Completed at','Time open','Customers']];
   visible().forEach(i=>rows.push([i.priority,i.site,pickName(i)+' ('+i.route+')',(i.dates||[i.date]).join(' '),i.stopCount,Math.round(i.weight),i.assignee||'',STATUS_LABEL[i.status],i.assignedAt?new Date(i.assignedAt).toLocaleString():'',i.doneAt&&i.status==='done'?new Date(i.doneAt).toLocaleString():'',i.status==='done'?fmtDur(i.openMs):'',(i.stops||[]).map(s=>s.name).join('; ')]));
   const csv=rows.map(r=>r.map(v=>`"${String(v??'').replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  try{await downloads.save({filename:`route-work-${new Date().toISOString().slice(0,10)}.csv`,data:csv})}catch(e){if(e&&e.code!=='declined')toast('Export was not saved.')}
+  const fname=`route-work-${new Date().toISOString().slice(0,10)}.csv`;
+  if(!downloads){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));a.download=fname;document.body.appendChild(a);a.click();a.remove();return}
+  try{await downloads.save({filename:fname,data:csv})}catch(e){if(e&&e.code!=='declined')toast('Export was not saved.')}
 });
 
 /* ---------- employee screen ---------- */
@@ -992,21 +1118,27 @@ renderRules();route();
 (async()=>{
   const c=window.claude;
   db=c&&c.use?await c.use('db').catch(()=>null):null;
+  let shareLabel='Shared board · live for everyone with the link';
+  if(!db&&window.SPDB){
+    // Hosted outside claude.ai (e.g. GitHub Pages): share through a SharePoint list if configured.
+    try{$('mode').textContent='Connecting to SharePoint…';db=await window.SPDB.connect();if(db)shareLabel=`Shared via SharePoint · signed in as ${esc(db.userName||'')}`}
+    catch(e){db=null;$('mode').innerHTML=`<b class="local">●</b> SharePoint not connected: ${esc(e.message||e)}`;toast('Could not connect to SharePoint. This PC is saving locally only.')}
+  }
   if(db){
-    $('mode').innerHTML='<b>●</b> Shared board · live for everyone with the link';
+    $('mode').innerHTML='<b>●</b> '+shareLabel;
     db.collection('work').onSnapshot(snap=>{
       state.items=new Map(snap.docs.map(d=>[d.id,{...d.data(),id:d.id}]));render();
     },()=>{$('mode').innerHTML='<b class="local">●</b> Lost connection. Reload to reconnect.'});
     db.doc('config/settings').onSnapshot(s=>{
       if(s.exists&&!document.activeElement.closest('.rules')){const d=s.data();state.settings={unit:d.unit||'group',target:num(d.target)||8000,rules:(d.rules||[]).map(r=>({...r})),autoPri:d.autoPri||'',consol:d.consol!==false,consolMax:num(d.consolMax)||500,consolWindow:num(d.consolWindow)||3};renderRules()}
     },()=>{});
-    try{const u=await c.use('user');const can=u&&await u.can('data.write');if(can===false){readOnly=true;$('mode').innerHTML+=' · view only'}}catch(e){}
+    if(c&&c.use)try{const u=await c.use('user');const can=u&&await u.can('data.write');if(can===false){readOnly=true;$('mode').innerHTML+=' · view only'}}catch(e){}
   }else{
     lsLoad();renderRules();render();
-    $('mode').innerHTML='<b class="local">●</b> Saved in this browser only';
+    if(!/SharePoint not connected/.test($('mode').textContent))$('mode').innerHTML='<b class="local">●</b> Saved in this browser only';
   }
   downloads=c&&c.use?await c.use('downloads').catch(()=>null):null;
-  $('exportBtn').hidden=!downloads;
+  $('exportBtn').hidden=false;
 })();
 </script>
 
